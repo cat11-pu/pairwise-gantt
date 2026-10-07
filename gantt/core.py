@@ -11,6 +11,8 @@
 * schedule()         —— 排程，可选并行上限，给出开始、完成、总松弛与关键任务。
 """
 
+import heapq
+
 __all__ = [
     "GanttError",
     "Schedule",
@@ -128,14 +130,17 @@ def topological_order(tasks):
     following = _successors(specs)
     indegree = {spec.name: len(spec.deps) for spec in specs}
     ready = [name for name, degree in indegree.items() if degree == 0]
+    heapq.heapify(ready)
     order = []
     while ready:
-        name = ready.pop()
+        name = heapq.heappop(ready)
         order.append(name)
         for later in following[name]:
             indegree[later] -= 1
             if indegree[later] == 0:
-                ready.append(later)
+                heapq.heappush(ready, later)
+    if len(order) != len(specs):
+        raise GanttError("依赖关系成环")
     return tuple(order)
 
 
@@ -148,7 +153,7 @@ def _forward(specs, order):
         spec = by_name[name]
         ready_at = 0
         for dep in spec.deps:
-            ready_at = max(ready_at, starts[dep])
+            ready_at = max(ready_at, finishes[dep])
         starts[name] = ready_at
         finishes[name] = ready_at + spec.duration
     return starts, finishes
@@ -176,11 +181,11 @@ def critical_path(tasks):
     order = topological_order(specs)
     _, finishes = _forward(specs, order)
     by_name = {spec.name: spec for spec in specs}
-    end = max(by_name, key=lambda name: finishes[name])
+    end = min(by_name, key=lambda name: (-finishes[name], name))
     chain = [end]
     current = by_name[end]
     while current.deps:
-        pick = max(current.deps, key=lambda name: finishes[name])
+        pick = min(current.deps, key=lambda name: (-finishes[name], name))
         chain.append(pick)
         current = by_name[pick]
     chain.reverse()
@@ -195,7 +200,7 @@ def _latest_starts(specs, order, following, horizon):
         spec = by_name[name]
         later = following[name]
         if later:
-            limit = latest[later[0]]
+            limit = min(latest[next_] for next_ in later)
         else:
             limit = horizon
         latest[name] = limit - spec.duration
@@ -216,14 +221,13 @@ def _resource_plan(specs, order, capacity):
             if any(dep not in finishes or finishes[dep] > now
                    for dep in spec.deps):
                 continue
-            if spec.duration > 0 and len(running) > capacity:
+            if spec.duration > 0 and len(running) >= capacity:
                 continue
             starts[name] = now
             finishes[name] = now + spec.duration
             pending.remove(name)
             if spec.duration > 0:
                 running[name] = finishes[name]
-            break
         if not pending:
             break
         if running:
@@ -241,7 +245,7 @@ def _peak(starts, finishes):
     for name in starts:
         live = 0
         for other in starts:
-            if starts[other] <= starts[name] <= finishes[other]:
+            if starts[other] <= starts[name] < finishes[other]:
                 live += 1
         peak = max(peak, live)
     return peak
